@@ -1,6 +1,8 @@
 import os
 import math
 import asyncio
+import json
+import re
 from dataclasses import dataclass
 from typing import Optional
 
@@ -8,6 +10,7 @@ import aiohttp
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
+from yarl import URL
 
 load_dotenv()
 
@@ -22,6 +25,7 @@ if not STEAM_API_KEY:
 
 FRIENDS_PER_PAGE = 25
 MAX_COMPARE_FRIENDS = 5
+MAX_USER_SEARCH_RESULTS = 3
 
 MULTIPLAYER_CATEGORY_NAMES = {
     "multi-player",
@@ -50,6 +54,15 @@ class FriendEntry:
     profileurl: str = ""
 
 
+@dataclass
+class SearchUserEntry:
+    steamid: str
+    profile_label: str
+    avatar: str = ""
+    personaname: str = ""
+    profileurl: str = ""
+
+
 async def steam_get_json(
     session: aiohttp.ClientSession,
     url: str,
@@ -73,6 +86,100 @@ async def steam_get_json(
 
     except Exception as e:
         return 0, None, str(e)
+
+
+async def search_community_users(session: aiohttp.ClientSession, username: str) -> list[SearchUserEntry]:
+    try:
+        async with session.get("https://steamcommunity.com/search/users/", timeout=20) as resp:
+            resp.raise_for_status()
+
+        cookies = session.cookie_jar.filter_cookies(URL("https://steamcommunity.com"))
+        session_cookie = cookies.get("sessionid")
+        if not session_cookie:
+            print("Steam community search did not return a sessionid cookie.")
+            return []
+
+        params = {
+            "text": username,
+            "filter": "users",
+            "sessionid": session_cookie.value,
+            "steamid_user": "false",
+            "page": 1,
+        }
+
+        async with session.get(
+            "https://steamcommunity.com/search/SearchCommunityAjax",
+            params=params,
+            timeout=20,
+        ) as resp:
+            resp.raise_for_status()
+            payload = await resp.json(content_type=None)
+    except Exception as e:
+        print(f"Steam community search failed: {e}")
+        return []
+
+    html = payload.get("html", "")
+    if not html:
+        return []
+
+    profile_links = re.findall(
+        r'<a href="https://steamcommunity\.com/(id|profiles)/([^"/]+)[^"]*"[^>]*><img src="([^"]+)"',
+        html,
+    )
+    miniprofiles = re.findall(r'data-miniprofile="(\d+)"', html)
+
+    steam64_base = 76561197960265728
+    results: list[SearchUserEntry] = []
+
+    for i, (profile_type, value, avatar) in enumerate(profile_links[:MAX_USER_SEARCH_RESULTS]):
+        if profile_type == "profiles":
+            steamid = value
+            profile_label = f"profiles/{value}"
+        else:
+            if i >= len(miniprofiles):
+                continue
+            steamid = str(steam64_base + int(miniprofiles[i]))
+            profile_label = f"id/{value}"
+
+        results.append(
+            SearchUserEntry(
+                steamid=steamid,
+                profile_label=profile_label,
+                avatar=avatar,
+            )
+        )
+
+    if results:
+        summaries = await get_player_summaries(session, [result.steamid for result in results if result.steamid.isdigit()])
+        summary_map = {entry.steamid: entry for entry in summaries}
+        for result in results:
+            summary = summary_map.get(result.steamid)
+            if summary:
+                result.personaname = summary.personaname
+                result.profileurl = summary.profileurl
+
+    return results
+
+
+async def resolve_user_input_to_steamid(
+    session: aiohttp.ClientSession,
+    user_input: str,
+) -> tuple[str, Optional[str], list[SearchUserEntry], Optional[str]]:
+    raw = user_input.strip()
+
+    if raw.isdigit():
+        if 17 <= len(raw) <= 20:
+            return "direct", raw, [], None
+        return "error", None, [], "That numeric input does not look like a SteamID64."
+
+    matches = await search_community_users(session, raw)
+    if not matches:
+        return "error", None, [], "I couldn't find any Steam users matching that name."
+
+    if len(matches) == 1:
+        return "direct", matches[0].steamid, matches, None
+
+    return "choose", None, matches, None
 
 
 async def get_friend_list(session: aiohttp.ClientSession, steamid: str) -> tuple[str, list[str], Optional[str]]:
@@ -248,6 +355,67 @@ async def get_multiplayer_common_games(
     return multiplayer_names, unavailable_users
 
 
+async def start_friend_picker(
+    interaction: discord.Interaction,
+    steamid_value: str,
+):
+    async with aiohttp.ClientSession() as session:
+        owner_summary = await get_player_summaries(session, [steamid_value])
+        owner_name = owner_summary[0].personaname if owner_summary else steamid_value
+
+        status, friend_ids, err = await get_friend_list(session, steamid_value)
+
+        if status == "private":
+            await interaction.followup.send(
+                "That user's Steam friends list is private.",
+                ephemeral=True,
+            )
+            return
+
+        if status == "forbidden":
+            await interaction.followup.send(
+                "Steam rejected the request with 403. This usually means the API key is invalid or not accepted.",
+                ephemeral=True,
+            )
+            return
+
+        if status != "ok":
+            await interaction.followup.send(
+                f"I couldn't fetch the friends list from Steam.\nStatus: `{status}`\nError: `{err or 'None'}`",
+                ephemeral=True,
+            )
+            return
+
+        if not friend_ids:
+            await interaction.followup.send(
+                "No friends were returned for that Steam account.",
+                ephemeral=True,
+            )
+            return
+
+        friends = await get_player_summaries(session, friend_ids)
+
+    if not friends:
+        await interaction.followup.send(
+            "I found friend IDs, but couldn't resolve any display names.",
+            ephemeral=True,
+        )
+        return
+
+    view = FriendPickerView(
+        requester_id=interaction.user.id,
+        owner_steamid=steamid_value,
+        owner_name=owner_name,
+        friends=friends,
+    )
+    message = await interaction.followup.send(
+        content=view.render_header(),
+        view=view,
+        ephemeral=True,
+    )
+    view.message = message
+
+
 def chunk_text_lines(lines: list[str], max_chars: int = 1800) -> list[str]:
     chunks = []
     current = ""
@@ -266,12 +434,12 @@ def chunk_text_lines(lines: list[str], max_chars: int = 1800) -> list[str]:
     return chunks
 
 
-class SteamIdModal(discord.ui.Modal, title="Enter your SteamID64"):
-    steamid = discord.ui.TextInput(
-        label="SteamID64",
-        placeholder="Example: 7656119...",
-        min_length=17,
-        max_length=20,
+class SteamUserInputModal(discord.ui.Modal, title="Enter Steam username or SteamID64"):
+    steam_input = discord.ui.TextInput(
+        label="Steam username or SteamID64",
+        placeholder="...",
+        min_length=2,
+        max_length=50,
         required=True,
     )
 
@@ -279,72 +447,104 @@ class SteamIdModal(discord.ui.Modal, title="Enter your SteamID64"):
         super().__init__(timeout=300)
 
     async def on_submit(self, interaction: discord.Interaction):
-        steamid_value = str(self.steamid).strip()
-
-        if not steamid_value.isdigit():
-            await interaction.response.send_message(
-                "That does not look like a numeric SteamID64.",
-                ephemeral=True,
-            )
-            return
-
+        user_input = str(self.steam_input).strip()
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         async with aiohttp.ClientSession() as session:
-            owner_summary = await get_player_summaries(session, [steamid_value])
-            owner_name = owner_summary[0].personaname if owner_summary else steamid_value
+            mode, steamid_value, matches, error_message = await resolve_user_input_to_steamid(session, user_input)
 
-            status, friend_ids, err = await get_friend_list(session, steamid_value)
-
-            if status == "private":
-                await interaction.followup.send(
-                    "That user's Steam friends list is private.",
-                    ephemeral=True,
-                )
-                return
-
-            if status == "forbidden":
-                await interaction.followup.send(
-                    "Steam rejected the request with 403. This usually means the API key is invalid or not accepted.",
-                    ephemeral=True,
-                )
-                return
-
-            if status != "ok":
-                await interaction.followup.send(
-                    f"I couldn't fetch the friends list from Steam.\nStatus: `{status}`\nError: `{err or 'None'}`",
-                    ephemeral=True,
-                )
-                return
-
-            if not friend_ids:
-                await interaction.followup.send(
-                    "No friends were returned for that SteamID.",
-                    ephemeral=True,
-                )
-                return
-
-            friends = await get_player_summaries(session, friend_ids)
-
-        if not friends:
-            await interaction.followup.send(
-                "I found friend IDs, but couldn't resolve any display names.",
-                ephemeral=True,
-            )
+        if mode == "error":
+            await interaction.followup.send(error_message or "I couldn't resolve that Steam user.", ephemeral=True)
             return
 
-        view = FriendPickerView(
-            requester_id=interaction.user.id,
-            owner_steamid=steamid_value,
-            owner_name=owner_name,
-            friends=friends,
+        if mode == "direct" and steamid_value:
+            await start_friend_picker(interaction, steamid_value)
+            return
+
+        if mode == "choose":
+            chooser = SearchResultPickerView(interaction.user.id, user_input, matches)
+            message = await interaction.followup.send(
+                chooser.render_message(),
+                embeds=chooser.build_embeds(),
+                view=chooser,
+                ephemeral=True,
+            )
+            chooser.message = message
+            return
+
+        await interaction.followup.send("Something went wrong while resolving that Steam account.", ephemeral=True)
+
+
+class SearchResultSelect(discord.ui.Select):
+    def __init__(self, parent_view: "SearchResultPickerView"):
+        self.parent_view = parent_view
+        options = [
+            discord.SelectOption(
+                label=(result.personaname or result.profile_label)[:100],
+                value=result.steamid,
+                description=result.steamid[:100],
+            )
+            for result in parent_view.matches
+        ]
+
+        super().__init__(
+            placeholder="Pick the correct Steam account",
+            min_values=1,
+            max_values=1,
+            options=options,
         )
-        message = await interaction.followup.send(
-            content=view.render_header(),
-            view=view,
-            ephemeral=True,
-        )
-        view.message = message
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.parent_view.requester_id:
+            await interaction.response.send_message("This menu is not for you.", ephemeral=True)
+            return
+
+        chosen_steamid = self.values[0]
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await start_friend_picker(interaction, chosen_steamid)
+
+
+class SearchResultPickerView(discord.ui.View):
+    def __init__(self, requester_id: int, search_text: str, matches: list[SearchUserEntry]):
+        super().__init__(timeout=300)
+        self.requester_id = requester_id
+        self.search_text = search_text
+        self.matches = matches
+        self.message: Optional[discord.Message] = None
+        self.add_item(SearchResultSelect(self))
+
+    def render_message(self) -> str:
+        lines = [
+            f"I found multiple Steam users for **{self.search_text}**.",
+            "Pick the correct account from the dropdown below:",
+            "",
+        ]
+        for i, result in enumerate(self.matches, start=1):
+            lines.append(f"{i}. `{result.steamid}` - `{result.profile_label}`")
+        return "\n".join(lines)
+
+    def build_embeds(self) -> list[discord.Embed]:
+        embeds: list[discord.Embed] = []
+        for i, result in enumerate(self.matches, start=1):
+            title = result.personaname or result.profile_label or result.steamid
+            embed = discord.Embed(title=f"Result {i}: {title}")
+            embed.add_field(name="SteamID64", value=f"`{result.steamid}`", inline=False)
+            embed.add_field(name="Profile path", value=f"`{result.profile_label}`", inline=False)
+            if result.profileurl:
+                embed.add_field(name="Profile URL", value=result.profileurl, inline=False)
+            if result.avatar:
+                embed.set_thumbnail(url=result.avatar)
+            embeds.append(embed)
+        return embeds
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except Exception:
+                pass
 
 
 class FriendSelect(discord.ui.Select):
@@ -564,7 +764,7 @@ async def on_ready():
 
 @bot.tree.command(name="comparefriends", description="Choose Steam friends and find common multiplayer games.")
 async def comparefriends(interaction: discord.Interaction):
-    await interaction.response.send_modal(SteamIdModal())
+    await interaction.response.send_modal(SteamUserInputModal())
 
 
 bot.run(DISCORD_TOKEN)
