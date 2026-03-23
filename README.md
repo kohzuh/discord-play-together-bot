@@ -33,13 +33,22 @@ A Discord bot that lets a user enter their **SteamID64**, choose from their **St
 ## Usage
 
 1. [Click here to invite the bot to your server](https://discord.com/oauth2/authorize?client_id=1480349911651450991)
-2. Run the `/comparefriends` command in any channel the bot can access.
+2. Run the `/compare` command in any channel the bot can access.
 3. Enter either:
    - your **SteamID64**
    - or your **Steam username**
 4. If you enter a username and multiple matches are found, the bot will show the first few results so you can choose the correct account.
 5. Once your account is identified, select up to **5 friends** from your Steam friends list.
-6. Press **Compare** and the bot will return the multiplayer games that all selected users have in common.
+6. Press **Run** and the bot will return the multiplayer games that all selected users have in common.
+
+1. [Click here to invite the bot to your server](https://discord.com/oauth2/authorize?client_id=1480349911651450991)
+2. Run the `/roulette` command in any channel the bot can access.
+3. Enter either:
+   - your **SteamID64**
+   - or your **Steam username**
+4. If you enter a username and multiple matches are found, the bot will show the first few results so you can choose the correct account.
+5. Once your account is identified, select up to **5 friends** from your Steam friends list.
+6. Press **Run** and the bot will begin shuffling through shared games.
 
 ## Linking your account
 
