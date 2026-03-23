@@ -32,6 +32,7 @@ A Discord bot that lets a user enter their **SteamID64**, choose from their **St
 
 ## Usage
 
+#Compare
 1. [Click here to invite the bot to your server](https://discord.com/oauth2/authorize?client_id=1480349911651450991)
 2. Run the `/compare` command in any channel the bot can access.
 3. Enter either:
@@ -41,6 +42,7 @@ A Discord bot that lets a user enter their **SteamID64**, choose from their **St
 5. Once your account is identified, select up to **5 friends** from your Steam friends list.
 6. Press **Run** and the bot will return the multiplayer games that all selected users have in common.
 
+#Roulette
 1. [Click here to invite the bot to your server](https://discord.com/oauth2/authorize?client_id=1480349911651450991)
 2. Run the `/roulette` command in any channel the bot can access.
 3. Enter either:
