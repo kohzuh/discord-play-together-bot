@@ -32,7 +32,7 @@ A Discord bot that lets a user enter their **SteamID64**, choose from their **St
 
 ## Usage
 
-1. Invite the bot to your server and make sure it is online.
+1. [Click here to invite the bot to your server](https://discord.com/oauth2/authorize?client_id=1480349911651450991)
 2. Run the `/comparefriends` command in any channel the bot can access.
 3. Enter either:
    - your **SteamID64**
