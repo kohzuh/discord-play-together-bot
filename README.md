@@ -4,7 +4,7 @@ A Discord bot that lets a user enter their **SteamID64**, choose from their **St
 
 ## What it does
 
-- Opens a Discord modal for the user to enter their **SteamID64**
+- Opens a Discord modal for the user to enter their **SteamID64**, or **Steam display name**
 - Fetches that user's **Steam friends list**
 - Displays friends in a paged select menu
 - Lets the user choose up to **5 friends**
@@ -36,3 +36,6 @@ Install dependencies:
 
 ```bash
 pip install -U discord.py requests python-dotenv
+
+or, try it on your own!
+https://discord.com/oauth2/authorize?client_id=1480349911651450991
